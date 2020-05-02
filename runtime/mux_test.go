@@ -2,7 +2,6 @@ package runtime_test
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +21,8 @@ func TestMuxServeHTTP(t *testing.T) {
 		verb   string
 	}
 	for _, spec := range []struct {
+		name string
+
 		patterns    []stubPattern
 		patternOpts []runtime.PatternOpt
 
@@ -33,16 +34,17 @@ func TestMuxServeHTTP(t *testing.T) {
 		respContent string
 
 		disablePathLengthFallback bool
-		errHandler                runtime.ProtoErrorHandlerFunc
 		muxOpts                   []runtime.ServeMuxOption
 	}{
 		{
+			name:       "GET to unregistered path with no registered paths should return 501 Not Implemented",
 			patterns:   nil,
 			reqMethod:  "GET",
 			reqPath:    "/",
-			respStatus: http.StatusNotFound,
+			respStatus: http.StatusNotImplemented,
 		},
 		{
+			name: "GET to registered path should return GET 200 OK",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -56,6 +58,7 @@ func TestMuxServeHTTP(t *testing.T) {
 			respContent: "GET /foo",
 		},
 		{
+			name: "GET to unregistered path with should return 501 Not Implemented",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -65,9 +68,10 @@ func TestMuxServeHTTP(t *testing.T) {
 			},
 			reqMethod:  "GET",
 			reqPath:    "/bar",
-			respStatus: http.StatusNotFound,
+			respStatus: http.StatusNotImplemented,
 		},
 		{
+			name: "GET to registered path with two registered paths should return GET 200 OK",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -85,6 +89,7 @@ func TestMuxServeHTTP(t *testing.T) {
 			respContent: "GET /foo",
 		},
 		{
+			name: "POST to registered path with GET also registered should return POST 200 OK",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -103,6 +108,7 @@ func TestMuxServeHTTP(t *testing.T) {
 			respContent: "POST /foo",
 		},
 		{
+			name: "DELETE to path with GET registered should return 501 NotImplemented",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -112,9 +118,10 @@ func TestMuxServeHTTP(t *testing.T) {
 			},
 			reqMethod:  "DELETE",
 			reqPath:    "/foo",
-			respStatus: http.StatusMethodNotAllowed,
+			respStatus: http.StatusNotImplemented,
 		},
 		{
+			name: "POST with path length fallback to registered path with GET should return GET 200 OK",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -131,6 +138,7 @@ func TestMuxServeHTTP(t *testing.T) {
 			respContent: "GET /foo",
 		},
 		{
+			name: "POST with path length fallback to registered path with GET with path length fallback disabled should return 501 Not Implemented",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -143,11 +151,11 @@ func TestMuxServeHTTP(t *testing.T) {
 			headers: map[string]string{
 				"Content-Type": "application/x-www-form-urlencoded",
 			},
-			respStatus:                http.StatusMethodNotAllowed,
-			respContent:               "Method Not Allowed\n",
+			respStatus:                http.StatusNotImplemented,
 			disablePathLengthFallback: true,
 		},
 		{
+			name: "POST with path length fallback to registered path with POST with path length fallback disabled should return POST 200 OK",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -170,6 +178,7 @@ func TestMuxServeHTTP(t *testing.T) {
 			disablePathLengthFallback: true,
 		},
 		{
+			name: "POST with path length fallback and method override to registered path with GET should return GET 200 OK",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -192,6 +201,7 @@ func TestMuxServeHTTP(t *testing.T) {
 			respContent: "GET /foo",
 		},
 		{
+			name: "POST to registered path with GET should return 501 NotImplemented",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -204,9 +214,10 @@ func TestMuxServeHTTP(t *testing.T) {
 			headers: map[string]string{
 				"Content-Type": "application/json",
 			},
-			respStatus: http.StatusMethodNotAllowed,
+			respStatus: http.StatusNotImplemented,
 		},
 		{
+			name: "POST to registered path with verb should return POST 200 OK",
 			patterns: []stubPattern{
 				{
 					method: "POST",
@@ -224,6 +235,7 @@ func TestMuxServeHTTP(t *testing.T) {
 			respContent: "POST /foo:bar",
 		},
 		{
+			name: "POST to registered path with verb and non-verb should return POST 200 OK",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -246,38 +258,7 @@ func TestMuxServeHTTP(t *testing.T) {
 			respContent: "GET /foo/{id=*}:verb",
 		},
 		{
-			// mux identifying invalid path results in 'Not Found' status
-			// (with custom handler looking for ErrUnknownURI)
-			patterns: []stubPattern{
-				{
-					method: "GET",
-					ops:    []int{int(utilities.OpLitPush), 0},
-					pool:   []string{"unimplemented"},
-				},
-			},
-			reqMethod:   "GET",
-			reqPath:     "/foobar",
-			respStatus:  http.StatusNotFound,
-			respContent: "GET /foobar",
-			errHandler:  unknownPathIs404,
-		},
-		{
-			// server returning unimplemented results in 'Not Implemented' code
-			// even when using custom error handler
-			patterns: []stubPattern{
-				{
-					method: "GET",
-					ops:    []int{int(utilities.OpLitPush), 0},
-					pool:   []string{"unimplemented"},
-				},
-			},
-			reqMethod:   "GET",
-			reqPath:     "/unimplemented",
-			respStatus:  http.StatusNotImplemented,
-			respContent: `GET /unimplemented`,
-			errHandler:  unknownPathIs404,
-		},
-		{
+			name: "GET to registered path without AssumeColonVerb should return GET 200 OK",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -295,6 +276,7 @@ func TestMuxServeHTTP(t *testing.T) {
 			respContent: "GET /foo/{id=*}",
 		},
 		{
+			name: "GET to registered path without AssumeColonVerb with colon verb should return GET 200 OK",
 			patterns: []stubPattern{
 				{
 					method: "GET",
@@ -312,6 +294,7 @@ func TestMuxServeHTTP(t *testing.T) {
 			respContent: "GET /foo/{id=*}",
 		},
 		{
+			name: "POST to registered path without AssumeColonVerb with LastMatchWins should match the correctly",
 			patterns: []stubPattern{
 				{
 					method: "POST",
@@ -336,64 +319,53 @@ func TestMuxServeHTTP(t *testing.T) {
 			muxOpts:     []runtime.ServeMuxOption{runtime.WithLastMatchWins()},
 		},
 	} {
-		opts := spec.muxOpts
-		if spec.disablePathLengthFallback {
-			opts = append(opts, runtime.WithDisablePathLengthFallback())
-		}
-		if spec.errHandler != nil {
-			opts = append(opts, runtime.WithProtoErrorHandler(spec.errHandler))
-		}
-		mux := runtime.NewServeMux(opts...)
-		for _, p := range spec.patterns {
-			func(p stubPattern) {
-				pat, err := runtime.NewPattern(1, p.ops, p.pool, p.verb, spec.patternOpts...)
-				if err != nil {
-					t.Fatalf("runtime.NewPattern(1, %#v, %#v, %q) failed with %v; want success", p.ops, p.pool, p.verb, err)
-				}
-				mux.Handle(p.method, pat, func(w http.ResponseWriter, r *http.Request, pathParams map[string]string) {
-					if r.URL.Path == "/unimplemented" {
-						// simulate method returning "unimplemented" error
-						_, m := runtime.MarshalerForRequest(mux, r)
-						runtime.HTTPError(r.Context(), mux, m, w, r, status.Error(codes.Unimplemented, http.StatusText(http.StatusNotImplemented)))
-						w.WriteHeader(http.StatusNotImplemented)
-						return
-					}
-					fmt.Fprintf(w, "%s %s", p.method, pat.String())
-				})
-			}(p)
-		}
-
-		url := fmt.Sprintf("http://host.example%s", spec.reqPath)
-		r, err := http.NewRequest(spec.reqMethod, url, bytes.NewReader(nil))
-		if err != nil {
-			t.Fatalf("http.NewRequest(%q, %q, nil) failed with %v; want success", spec.reqMethod, url, err)
-		}
-		for name, value := range spec.headers {
-			r.Header.Set(name, value)
-		}
-		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, r)
-
-		if got, want := w.Code, spec.respStatus; got != want {
-			t.Errorf("w.Code = %d; want %d; patterns=%v; req=%v", got, want, spec.patterns, r)
-		}
-		if spec.respContent != "" {
-			if got, want := w.Body.String(), spec.respContent; got != want {
-				t.Errorf("w.Body = %q; want %q; patterns=%v; req=%v", got, want, spec.patterns, r)
+		t.Run(spec.name, func(t *testing.T) {
+			opts := spec.muxOpts
+			if spec.disablePathLengthFallback {
+				opts = append(opts, runtime.WithDisablePathLengthFallback())
 			}
-		}
-	}
-}
+			mux := runtime.NewServeMux(opts...)
+			for _, p := range spec.patterns {
+				func(p stubPattern) {
+					pat, err := runtime.NewPattern(1, p.ops, p.pool, p.verb, spec.patternOpts...)
+					if err != nil {
+						t.Fatalf("runtime.NewPattern(1, %#v, %#v, %q) failed with %v; want success", p.ops, p.pool, p.verb, err)
+					}
+					mux.Handle(p.method, pat, func(w http.ResponseWriter, r *http.Request, pathParams map[string]string) {
+						if r.URL.Path == "/unimplemented" {
+							// simulate method returning "unimplemented" error
+							_, m := runtime.MarshalerForRequest(mux, r)
+							st := status.New(codes.Unimplemented, http.StatusText(http.StatusNotImplemented))
+							m.NewEncoder(w).Encode(st.Proto())
+							w.WriteHeader(http.StatusNotImplemented)
+							return
+						}
+						fmt.Fprintf(w, "%s %s", p.method, pat.String())
+					})
+				}(p)
+			}
 
-func unknownPathIs404(ctx context.Context, mux *runtime.ServeMux, m runtime.Marshaler, w http.ResponseWriter, r *http.Request, err error) {
-	if err == runtime.ErrUnknownURI {
-		w.WriteHeader(http.StatusNotFound)
-	} else {
-		c := status.Convert(err).Code()
-		w.WriteHeader(runtime.HTTPStatusFromCode(c))
-	}
+			url := fmt.Sprintf("http://host.example%s", spec.reqPath)
+			r, err := http.NewRequest(spec.reqMethod, url, bytes.NewReader(nil))
+			if err != nil {
+				t.Fatalf("http.NewRequest(%q, %q, nil) failed with %v; want success", spec.reqMethod, url, err)
+			}
+			for name, value := range spec.headers {
+				r.Header.Set(name, value)
+			}
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, r)
 
-	fmt.Fprintf(w, "%s %s", r.Method, r.URL.Path)
+			if got, want := w.Code, spec.respStatus; got != want {
+				t.Errorf("w.Code = %d; want %d; patterns=%v; req=%v", got, want, spec.patterns, r)
+			}
+			if spec.respContent != "" {
+				if got, want := w.Body.String(), spec.respContent; got != want {
+					t.Errorf("w.Body = %q; want %q; patterns=%v; req=%v", got, want, spec.patterns, r)
+				}
+			}
+		})
+	}
 }
 
 var defaultHeaderMatcherTests = []struct {

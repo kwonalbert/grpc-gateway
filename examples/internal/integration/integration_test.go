@@ -1345,13 +1345,13 @@ func TestUnknownPath(t *testing.T) {
 		return
 	}
 
-	if got, want := resp.StatusCode, http.StatusNotFound; got != want {
+	if got, want := resp.StatusCode, http.StatusNotImplemented; got != want {
 		t.Errorf("resp.StatusCode = %d; want %d", got, want)
 		t.Logf("%s", buf)
 	}
 }
 
-func TestMethodNotAllowed(t *testing.T) {
+func TestIncorrectMethod(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
 		return
@@ -1370,7 +1370,7 @@ func TestMethodNotAllowed(t *testing.T) {
 		return
 	}
 
-	if got, want := resp.StatusCode, http.StatusMethodNotAllowed; got != want {
+	if got, want := resp.StatusCode, http.StatusNotImplemented; got != want {
 		t.Errorf("resp.StatusCode = %d; want %d", got, want)
 		t.Logf("%s", buf)
 	}

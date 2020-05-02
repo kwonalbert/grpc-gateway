@@ -16,9 +16,8 @@ import (
 // A HandlerFunc handles a specific pair of path pattern and HTTP method.
 type HandlerFunc func(w http.ResponseWriter, r *http.Request, pathParams map[string]string)
 
-// ErrUnknownURI is the error supplied to a custom ProtoErrorHandlerFunc when
-// a request is received with a URI path that does not match any registered
-// service method.
+// ErrUnknownURI is the error returned when a request is received with a URI path
+// or HTTP Method that does not match any registered service method.
 //
 // Since gRPC servers return an "Unimplemented" code for requests with an
 // unrecognized URI path, this error also has a gRPC "Unimplemented" code.
@@ -34,7 +33,7 @@ type ServeMux struct {
 	incomingHeaderMatcher     HeaderMatcherFunc
 	outgoingHeaderMatcher     HeaderMatcherFunc
 	metadataAnnotators        []func(context.Context, *http.Request) metadata.MD
-	protoErrorHandler         ProtoErrorHandlerFunc
+	errorHandler              ErrorHandlerFunc
 	disablePathLengthFallback bool
 	lastMatchWins             bool
 }
@@ -110,14 +109,12 @@ func WithMetadata(annotator func(context.Context, *http.Request) metadata.MD) Se
 	}
 }
 
-// WithProtoErrorHandler returns a ServeMuxOption for configuring a custom error handler.
+// WithErrorHandler returns a ServeMuxOption for configuring a custom error handler.
 //
-// This can be used to handle an error as general proto message defined by gRPC.
-// When this option is used, the mux uses the configured error handler instead of HTTPError and
-// OtherErrorHandler.
-func WithProtoErrorHandler(fn ProtoErrorHandlerFunc) ServeMuxOption {
+// This can be used to configure a custom error response.
+func WithErrorHandler(fn ErrorHandlerFunc) ServeMuxOption {
 	return func(serveMux *ServeMux) {
-		serveMux.protoErrorHandler = fn
+		serveMux.errorHandler = fn
 	}
 }
 
@@ -143,6 +140,7 @@ func NewServeMux(opts ...ServeMuxOption) *ServeMux {
 		handlers:               make(map[string][]handler),
 		forwardResponseOptions: make([]func(context.Context, http.ResponseWriter, proto.Message) error, 0),
 		marshalers:             makeMarshalerMIMERegistry(),
+		errorHandler:           defaultHTTPErrorHandler,
 	}
 
 	for _, opt := range opts {
@@ -177,28 +175,22 @@ func (s *ServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	path := r.URL.Path
 	if !strings.HasPrefix(path, "/") {
-		if s.protoErrorHandler != nil {
-			_, outboundMarshaler := MarshalerForRequest(s, r)
-			sterr := status.Error(codes.InvalidArgument, http.StatusText(http.StatusBadRequest))
-			s.protoErrorHandler(ctx, s, outboundMarshaler, w, r, sterr)
-		} else {
-			OtherErrorHandler(w, r, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		}
+		_, outboundMarshaler := MarshalerForRequest(s, r)
+		sterr := status.Error(codes.InvalidArgument, http.StatusText(http.StatusBadRequest))
+		s.errorHandler(ctx, s, outboundMarshaler, w, r, sterr)
 		return
 	}
 
 	components := strings.Split(path[1:], "/")
 	l := len(components)
 	var verb string
-	if idx := strings.LastIndex(components[l-1], ":"); idx == 0 {
-		if s.protoErrorHandler != nil {
-			_, outboundMarshaler := MarshalerForRequest(s, r)
-			s.protoErrorHandler(ctx, s, outboundMarshaler, w, r, ErrUnknownURI)
-		} else {
-			OtherErrorHandler(w, r, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-		}
+	idx := strings.LastIndex(components[l-1], ":")
+	if idx == 0 {
+		_, outboundMarshaler := MarshalerForRequest(s, r)
+		s.errorHandler(ctx, s, outboundMarshaler, w, r, ErrUnknownURI)
 		return
-	} else if idx > 0 {
+	}
+	if idx > 0 {
 		c := components[l-1]
 		components[l-1], verb = c[:idx], c[idx+1:]
 	}
@@ -206,13 +198,9 @@ func (s *ServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if override := r.Header.Get("X-HTTP-Method-Override"); override != "" && s.isPathLengthFallback(r) {
 		r.Method = strings.ToUpper(override)
 		if err := r.ParseForm(); err != nil {
-			if s.protoErrorHandler != nil {
-				_, outboundMarshaler := MarshalerForRequest(s, r)
-				sterr := status.Error(codes.InvalidArgument, err.Error())
-				s.protoErrorHandler(ctx, s, outboundMarshaler, w, r, sterr)
-			} else {
-				OtherErrorHandler(w, r, err.Error(), http.StatusBadRequest)
-			}
+			_, outboundMarshaler := MarshalerForRequest(s, r)
+			sterr := status.Error(codes.InvalidArgument, err.Error())
+			s.errorHandler(ctx, s, outboundMarshaler, w, r, sterr)
 			return
 		}
 	}
@@ -225,8 +213,7 @@ func (s *ServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// lookup other methods to handle fallback from GET to POST and
-	// to determine if it is MethodNotAllowed or NotFound.
+	// lookup other methods to handle fallback from GET to POST.
 	for m, handlers := range s.handlers {
 		if m == r.Method {
 			continue
@@ -239,34 +226,22 @@ func (s *ServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// X-HTTP-Method-Override is optional. Always allow fallback to POST.
 			if s.isPathLengthFallback(r) {
 				if err := r.ParseForm(); err != nil {
-					if s.protoErrorHandler != nil {
-						_, outboundMarshaler := MarshalerForRequest(s, r)
-						sterr := status.Error(codes.InvalidArgument, err.Error())
-						s.protoErrorHandler(ctx, s, outboundMarshaler, w, r, sterr)
-					} else {
-						OtherErrorHandler(w, r, err.Error(), http.StatusBadRequest)
-					}
+					_, outboundMarshaler := MarshalerForRequest(s, r)
+					sterr := status.Error(codes.InvalidArgument, err.Error())
+					s.errorHandler(ctx, s, outboundMarshaler, w, r, sterr)
 					return
 				}
 				h.h(w, r, pathParams)
 				return
 			}
-			if s.protoErrorHandler != nil {
-				_, outboundMarshaler := MarshalerForRequest(s, r)
-				s.protoErrorHandler(ctx, s, outboundMarshaler, w, r, ErrUnknownURI)
-			} else {
-				OtherErrorHandler(w, r, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-			}
+			_, outboundMarshaler := MarshalerForRequest(s, r)
+			s.errorHandler(ctx, s, outboundMarshaler, w, r, ErrUnknownURI)
 			return
 		}
 	}
 
-	if s.protoErrorHandler != nil {
-		_, outboundMarshaler := MarshalerForRequest(s, r)
-		s.protoErrorHandler(ctx, s, outboundMarshaler, w, r, ErrUnknownURI)
-	} else {
-		OtherErrorHandler(w, r, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-	}
+	_, outboundMarshaler := MarshalerForRequest(s, r)
+	s.errorHandler(ctx, s, outboundMarshaler, w, r, ErrUnknownURI)
 }
 
 // GetForwardResponseOptions returns the ForwardResponseOptions associated with this ServeMux.
